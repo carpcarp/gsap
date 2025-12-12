@@ -51,9 +51,17 @@ func (c *TypeCoercer) coerceValue(value interface{}, targetType reflect.Type, sc
 
 	// Handle pointers
 	if targetType.Kind() == reflect.Ptr {
+		// If value is nil, return nil pointer
+		if value == nil {
+			return reflect.Zero(targetType).Interface(), nil
+		}
 		elem, err := c.coerceValue(value, targetType.Elem(), score)
 		if err != nil {
 			return nil, err
+		}
+		// If the coerced element is nil, return nil pointer
+		if elem == nil {
+			return reflect.Zero(targetType).Interface(), nil
 		}
 		result := reflect.New(targetType.Elem())
 		result.Elem().Set(reflect.ValueOf(elem))
@@ -344,7 +352,12 @@ func (c *TypeCoercer) coerceToStruct(value interface{}, targetType reflect.Type,
 				// Skip fields that fail to coerce if they're optional
 				continue
 			}
-			result.Field(i).Set(reflect.ValueOf(elem))
+			// Handle nil values properly - use zero value for the type
+			if elem == nil {
+				result.Field(i).Set(reflect.Zero(fieldType))
+			} else {
+				result.Field(i).Set(reflect.ValueOf(elem))
+			}
 		}
 	}
 
