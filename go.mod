@@ -1,3 +1,3 @@
-module github.com/alcarpenter/gsap
+module github.com/carpcarp/gsap
 
 go 1.25.3
