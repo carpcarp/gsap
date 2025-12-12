@@ -116,11 +116,16 @@ func (p *sapParser) ParseWithScore(input string, targetType reflect.Type) (inter
 			// Otherwise, try to fix it
 			fixed, fixErr := FixJSON(candidate.JSON)
 			if fixErr != nil {
-				bestErr = fixErr
+				// Only track error if we don't have a successful result yet
+				if bestScore == nil {
+					bestErr = fixErr
+				}
 				continue
 			}
 			if err := json.Unmarshal([]byte(fixed), &rawValue); err != nil {
-				bestErr = err
+				if bestScore == nil {
+					bestErr = err
+				}
 				continue
 			}
 		}
@@ -128,7 +133,10 @@ func (p *sapParser) ParseWithScore(input string, targetType reflect.Type) (inter
 		// Coerce to target type
 		result, candScore, err := p.coercer.Coerce(rawValue, targetType)
 		if err != nil {
-			bestErr = err
+			// Only track error if we don't have a successful result yet
+			if bestScore == nil {
+				bestErr = err
+			}
 			continue
 		}
 
@@ -136,7 +144,6 @@ func (p *sapParser) ParseWithScore(input string, targetType reflect.Type) (inter
 		if bestScore == nil || candScore.Less(bestScore) {
 			bestResult = result
 			bestScore = candScore
-			bestErr = nil
 		}
 	}
 
