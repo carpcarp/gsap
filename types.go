@@ -16,6 +16,21 @@ const (
 	Pending
 )
 
+// ScoreFlag represents a type of coercion or transformation applied during parsing.
+type ScoreFlag = string
+
+const (
+	FlagFloatToInt          ScoreFlag = "FloatToInt"
+	FlagStringToInt         ScoreFlag = "StringToInt"
+	FlagBoolToInt           ScoreFlag = "BoolToInt"
+	FlagStringToFloat       ScoreFlag = "StringToFloat"
+	FlagStringToBool        ScoreFlag = "StringToBool"
+	FlagNumberToBool        ScoreFlag = "NumberToBool"
+	FlagFuzzyFieldMatch     ScoreFlag = "FuzzyFieldMatch"
+	FlagEnumCaseInsensitive ScoreFlag = "EnumCaseInsensitive"
+	FlagEnumFuzzyMatch      ScoreFlag = "EnumFuzzyMatch"
+)
+
 // Score represents the quality of a parse result
 // Lower scores are better
 type Score struct {
@@ -40,6 +55,18 @@ func (s *Score) Total() int {
 // Less returns true if this score is better than other
 func (s *Score) Less(other *Score) bool {
 	return s.total < other.total
+}
+
+// Flags returns a copy of the score flags and their values.
+func (s *Score) Flags() map[string]int {
+	if s.flags == nil {
+		return nil
+	}
+	result := make(map[string]int, len(s.flags))
+	for k, v := range s.flags {
+		result[k] = v
+	}
+	return result
 }
 
 // ParseResult represents a successful parse
