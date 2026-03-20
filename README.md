@@ -1,5 +1,10 @@
 # GSAP - Go Schema-Aligned Parser
 
+[![CI](https://github.com/carpcarp/gsap/actions/workflows/ci.yml/badge.svg)](https://github.com/carpcarp/gsap/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/carpcarp/gsap.svg)](https://pkg.go.dev/github.com/carpcarp/gsap)
+[![Go Report Card](https://goreportcard.com/badge/github.com/carpcarp/gsap)](https://goreportcard.com/report/github.com/carpcarp/gsap)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A robust JSON parser for Go inspired by BAML's Schema-Aligned Parsing (SAP) algorithm. GSAP handles messy LLM-generated JSON by gracefully recovering from common issues like missing quotes, trailing commas, single quotes, and type mismatches.
 
 ## Features
