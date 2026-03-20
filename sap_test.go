@@ -2,6 +2,7 @@ package sap
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -603,4 +604,494 @@ func TestParseBooleanInactive(t *testing.T) {
 	if resume.Active {
 		t.Errorf("Expected active to be false for 'inactive'")
 	}
+}
+
+// --- Tests for ParsePartial ---
+
+func TestParsePartialValidJSON(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  TestUser
+	}{
+		{
+			name:  "complete object",
+			input: `{"name": "Alice", "age": 30, "email": "alice@test.com"}`,
+			want:  TestUser{Name: "Alice", Age: 30, Email: "alice@test.com"},
+		},
+		{
+			name:  "with type coercion",
+			input: `{"name": "Bob", "age": "25", "email": "bob@test.com"}`,
+			want:  TestUser{Name: "Bob", Age: 25, Email: "bob@test.com"},
+		},
+		{
+			name:  "embedded in markdown",
+			input: "Here is the data:\n```json\n{\"name\": \"Eve\", \"age\": 28, \"email\": \"eve@test.com\"}\n```",
+			want:  TestUser{Name: "Eve", Age: 28, Email: "eve@test.com"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, state, err := ParsePartial[TestUser](tt.input)
+			if err != nil {
+				t.Fatalf("ParsePartial failed: %v", err)
+			}
+			if state != Complete {
+				t.Errorf("Expected CompletionState Complete, got %v", state)
+			}
+			if result.Name != tt.want.Name {
+				t.Errorf("Name: got %q, want %q", result.Name, tt.want.Name)
+			}
+			if result.Age != tt.want.Age {
+				t.Errorf("Age: got %d, want %d", result.Age, tt.want.Age)
+			}
+			if result.Email != tt.want.Email {
+				t.Errorf("Email: got %q, want %q", result.Email, tt.want.Email)
+			}
+		})
+	}
+}
+
+func TestParsePartialInvalidJSON(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "no JSON at all",
+			input: "this is just plain text with no JSON",
+		},
+		{
+			name:  "empty string",
+			input: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, state, err := ParsePartial[TestUser](tt.input)
+			if err == nil {
+				t.Fatalf("Expected error for invalid input %q, got result: %+v", tt.input, result)
+			}
+			// On error, ParsePartial returns Complete as the state
+			if state != Complete {
+				t.Errorf("Expected CompletionState Complete on error, got %v", state)
+			}
+			// Result should be zero value
+			if result != (TestUser{}) {
+				t.Errorf("Expected zero TestUser on error, got %+v", result)
+			}
+		})
+	}
+}
+
+// --- Tests for InstructorParser configuration ---
+
+func TestInstructorParserWithStrict(t *testing.T) {
+	t.Run("strict rejects malformed JSON", func(t *testing.T) {
+		parser := NewInstructorParser().WithStrict(true)
+
+		var user TestUser
+		err := parser.Unmarshal([]byte(`{name: "Alice", age: 30}`), &user)
+		if err == nil {
+			t.Fatal("Expected strict mode to reject unquoted keys, got nil error")
+		}
+	})
+
+	t.Run("strict accepts valid JSON", func(t *testing.T) {
+		parser := NewInstructorParser().WithStrict(true)
+
+		var user TestUser
+		err := parser.Unmarshal(
+			[]byte(`{"name": "Alice", "age": 30, "email": "alice@test.com"}`),
+			&user,
+		)
+		if err != nil {
+			t.Fatalf("Expected valid JSON to succeed in strict mode: %v", err)
+		}
+		if user.Name != "Alice" {
+			t.Errorf("Name: got %q, want %q", user.Name, "Alice")
+		}
+		if user.Age != 30 {
+			t.Errorf("Age: got %d, want %d", user.Age, 30)
+		}
+	})
+
+	t.Run("chaining returns same parser", func(t *testing.T) {
+		parser := NewInstructorParser()
+		returned := parser.WithStrict(true)
+		if returned != parser {
+			t.Error("WithStrict should return the same InstructorParser for chaining")
+		}
+	})
+}
+
+func TestInstructorParserWithIncompleteJSON(t *testing.T) {
+	t.Run("chaining returns same parser", func(t *testing.T) {
+		parser := NewInstructorParser()
+		returned := parser.WithIncompleteJSON(true)
+		if returned != parser {
+			t.Error("WithIncompleteJSON should return the same InstructorParser for chaining")
+		}
+	})
+
+	t.Run("complete JSON still parses after enabling", func(t *testing.T) {
+		parser := NewInstructorParser().WithIncompleteJSON(true)
+
+		var user TestUser
+		err := parser.Unmarshal(
+			[]byte(`{"name": "Bob", "age": 40, "email": "bob@test.com"}`),
+			&user,
+		)
+		if err != nil {
+			t.Fatalf("Expected complete JSON to parse with WithIncompleteJSON enabled: %v", err)
+		}
+		if user.Name != "Bob" {
+			t.Errorf("Name: got %q, want %q", user.Name, "Bob")
+		}
+	})
+
+	t.Run("chaining both options", func(t *testing.T) {
+		parser := NewInstructorParser().WithStrict(false).WithIncompleteJSON(true)
+
+		var resume TestResume
+		err := parser.Unmarshal(
+			[]byte(`{"title": "Engineer", "experience": ["Go"], "active": true}`),
+			&resume,
+		)
+		if err != nil {
+			t.Fatalf("Chained configuration should parse valid JSON: %v", err)
+		}
+		if resume.Title != "Engineer" {
+			t.Errorf("Title: got %q, want %q", resume.Title, "Engineer")
+		}
+	})
+}
+
+func TestInstructorParserUnmarshalNil(t *testing.T) {
+	parser := NewInstructorParser()
+	err := parser.Unmarshal([]byte(`{"name": "test"}`), nil)
+	if err != nil {
+		t.Errorf("Unmarshal with nil target should return nil error, got: %v", err)
+	}
+}
+
+// --- Integration edge cases ---
+
+// TestUintFields is a struct for testing unsigned integer coercion.
+type TestUintFields struct {
+	Count   uint   `json:"count"`
+	Flags   uint32 `json:"flags"`
+	BigID   uint64 `json:"big_id"`
+}
+
+func TestParseUintField(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    TestUintFields
+	}{
+		{
+			name:  "direct numeric values",
+			input: `{"count": 42, "flags": 255, "big_id": 9999999}`,
+			want:  TestUintFields{Count: 42, Flags: 255, BigID: 9999999},
+		},
+		{
+			name:  "string to uint coercion",
+			input: `{"count": "10", "flags": "128", "big_id": "5000"}`,
+			want:  TestUintFields{Count: 10, Flags: 128, BigID: 5000},
+		},
+		{
+			name:  "zero values",
+			input: `{"count": 0, "flags": 0, "big_id": 0}`,
+			want:  TestUintFields{Count: 0, Flags: 0, BigID: 0},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Parse[TestUintFields](tt.input)
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			if result.Count != tt.want.Count {
+				t.Errorf("Count: got %d, want %d", result.Count, tt.want.Count)
+			}
+			if result.Flags != tt.want.Flags {
+				t.Errorf("Flags: got %d, want %d", result.Flags, tt.want.Flags)
+			}
+			if result.BigID != tt.want.BigID {
+				t.Errorf("BigID: got %d, want %d", result.BigID, tt.want.BigID)
+			}
+		})
+	}
+}
+
+// TestArrayFields is a struct for testing fixed-size array coercion.
+type TestArrayFields struct {
+	Tags   [3]string `json:"tags"`
+	Scores [2]int    `json:"scores"`
+}
+
+func TestParseArrayField(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		tags  [3]string
+		scores [2]int
+	}{
+		{
+			name:   "exact length match",
+			input:  `{"tags": ["go", "rust", "python"], "scores": [95, 87]}`,
+			tags:   [3]string{"go", "rust", "python"},
+			scores: [2]int{95, 87},
+		},
+		{
+			name:   "fewer elements than array size",
+			input:  `{"tags": ["go"], "scores": [100]}`,
+			tags:   [3]string{"go", "", ""},
+			scores: [2]int{100, 0},
+		},
+		{
+			name:   "more elements than array size truncates",
+			input:  `{"tags": ["a", "b", "c", "d", "e"], "scores": [1, 2, 3]}`,
+			tags:   [3]string{"a", "b", "c"},
+			scores: [2]int{1, 2},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Parse[TestArrayFields](tt.input)
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			if result.Tags != tt.tags {
+				t.Errorf("Tags: got %v, want %v", result.Tags, tt.tags)
+			}
+			if result.Scores != tt.scores {
+				t.Errorf("Scores: got %v, want %v", result.Scores, tt.scores)
+			}
+		})
+	}
+}
+
+// TestStringFromNumber is a struct for testing number-to-string coercion.
+type TestStringFromNumber struct {
+	Count string `json:"count"`
+	Label string `json:"label"`
+}
+
+func TestParseStringFromNumber(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantCount string
+		wantLabel string
+	}{
+		{
+			name:      "integer to string",
+			input:     `{"count": 42, "label": "test"}`,
+			wantCount: "42",
+			wantLabel: "test",
+		},
+		{
+			name:      "float to string",
+			input:     `{"count": 3.14, "label": "pi"}`,
+			wantCount: "3.14",
+			wantLabel: "pi",
+		},
+		{
+			name:      "boolean to string",
+			input:     `{"count": true, "label": "flag"}`,
+			wantCount: "true",
+			wantLabel: "flag",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := Parse[TestStringFromNumber](tt.input)
+			if err != nil {
+				t.Fatalf("Parse failed: %v", err)
+			}
+			if result.Count != tt.wantCount {
+				t.Errorf("Count: got %q, want %q", result.Count, tt.wantCount)
+			}
+			if result.Label != tt.wantLabel {
+				t.Errorf("Label: got %q, want %q", result.Label, tt.wantLabel)
+			}
+		})
+	}
+}
+
+func TestParseMapTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantKeys []string
+	}{
+		{
+			name:     "simple flat object",
+			input:    `{"name": "Alice", "role": "engineer"}`,
+			wantKeys: []string{"name", "role"},
+		},
+		{
+			name:     "mixed value types",
+			input:    `{"count": 42, "active": true, "label": "test"}`,
+			wantKeys: []string{"count", "active", "label"},
+		},
+	}
+
+	mapType := reflect.TypeOf(map[string]interface{}{})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := NewParser()
+			result, err := parser.Parse(tt.input, mapType)
+			if err != nil {
+				t.Fatalf("Parse to map failed: %v", err)
+			}
+			m, ok := result.(map[string]interface{})
+			if !ok {
+				t.Fatalf("Expected map[string]interface{}, got %T", result)
+			}
+			for _, key := range tt.wantKeys {
+				if _, exists := m[key]; !exists {
+					t.Errorf("Expected key %q in map, keys present: %v", key, mapKeys(m))
+				}
+			}
+		})
+	}
+}
+
+// mapKeys returns the keys of a map for diagnostic output.
+func mapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// TestNestedPointerStruct is a struct for testing pointer-to-struct fields.
+type TestNestedPointerStruct struct {
+	Owner   *TestUser `json:"owner"`
+	Project string    `json:"project"`
+}
+
+func TestParseNestedPointerToStruct(t *testing.T) {
+	t.Run("populated pointer", func(t *testing.T) {
+		input := `{"project": "gsap", "owner": {"name": "Alice", "age": 30, "email": "alice@test.com"}}`
+		result, err := Parse[TestNestedPointerStruct](input)
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if result.Project != "gsap" {
+			t.Errorf("Project: got %q, want %q", result.Project, "gsap")
+		}
+		if result.Owner == nil {
+			t.Fatal("Expected Owner to be non-nil")
+		}
+		if result.Owner.Name != "Alice" {
+			t.Errorf("Owner.Name: got %q, want %q", result.Owner.Name, "Alice")
+		}
+		if result.Owner.Age != 30 {
+			t.Errorf("Owner.Age: got %d, want %d", result.Owner.Age, 30)
+		}
+	})
+
+	t.Run("null pointer", func(t *testing.T) {
+		input := `{"project": "gsap", "owner": null}`
+		result, err := Parse[TestNestedPointerStruct](input)
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if result.Owner != nil {
+			t.Errorf("Expected Owner to be nil for null JSON value, got %+v", result.Owner)
+		}
+	})
+
+	t.Run("missing pointer field", func(t *testing.T) {
+		input := `{"project": "gsap"}`
+		result, err := Parse[TestNestedPointerStruct](input)
+		if err != nil {
+			t.Fatalf("Parse failed: %v", err)
+		}
+		if result.Owner != nil {
+			t.Errorf("Expected Owner to be nil for missing field, got %+v", result.Owner)
+		}
+	})
+}
+
+func TestParseScoreFlags(t *testing.T) {
+	t.Run("string-to-int coercion sets flag", func(t *testing.T) {
+		input := `{"name": "Test", "age": "25", "email": "t@t.com"}`
+		_, score, err := ParseWithScore[TestUser](input)
+		if err != nil {
+			t.Fatalf("ParseWithScore failed: %v", err)
+		}
+		flags := score.Flags()
+		if _, ok := flags[FlagStringToInt]; !ok {
+			t.Errorf("Expected %s flag to be set, flags: %v", FlagStringToInt, flags)
+		}
+	})
+
+	t.Run("string-to-bool coercion sets flag", func(t *testing.T) {
+		input := `{"title": "Dev", "experience": ["Go"], "active": "yes"}`
+		_, score, err := ParseWithScore[TestResume](input)
+		if err != nil {
+			t.Fatalf("ParseWithScore failed: %v", err)
+		}
+		flags := score.Flags()
+		if _, ok := flags[FlagStringToBool]; !ok {
+			t.Errorf("Expected %s flag to be set, flags: %v", FlagStringToBool, flags)
+		}
+	})
+
+	t.Run("clean parse has zero score", func(t *testing.T) {
+		input := `{"name": "Clean", "age": 30, "email": "c@c.com"}`
+		_, score, err := ParseWithScore[TestUser](input)
+		if err != nil {
+			t.Fatalf("ParseWithScore failed: %v", err)
+		}
+		if score.Total() != 0 {
+			t.Errorf("Expected zero score for clean JSON, got %d (flags: %v)", score.Total(), score.Flags())
+		}
+	})
+
+	t.Run("embedded struct sets flag", func(t *testing.T) {
+		input := `{"name": "Alice", "age": 30, "city": "NYC", "country": "US"}`
+		_, score, err := ParseWithScore[TestPerson](input)
+		if err != nil {
+			t.Fatalf("ParseWithScore failed: %v", err)
+		}
+		flags := score.Flags()
+		if _, ok := flags[FlagEmbeddedStruct]; !ok {
+			t.Errorf("Expected %s flag to be set, flags: %v", FlagEmbeddedStruct, flags)
+		}
+	})
+
+	t.Run("comma-split sets flag", func(t *testing.T) {
+		input := `{"title": "Dev", "experience": "go, rust", "active": true}`
+		_, score, err := ParseWithScore[TestResume](input)
+		if err != nil {
+			t.Fatalf("ParseWithScore failed: %v", err)
+		}
+		flags := score.Flags()
+		if _, ok := flags[FlagCommaSplitToSlice]; !ok {
+			t.Errorf("Expected %s flag to be set, flags: %v", FlagCommaSplitToSlice, flags)
+		}
+	})
+
+	t.Run("multiple coercions accumulate score", func(t *testing.T) {
+		input := `{"name": "Multi", "age": "30", "email": "m@m.com"}`
+		_, score, err := ParseWithScore[TestUser](input)
+		if err != nil {
+			t.Fatalf("ParseWithScore failed: %v", err)
+		}
+		if score.Total() <= 0 {
+			t.Errorf("Expected positive score for coerced JSON, got %d", score.Total())
+		}
+	})
 }
