@@ -5,45 +5,42 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/carpcarp/gsap)](https://goreportcard.com/report/github.com/carpcarp/gsap)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A robust JSON parser for Go inspired by BAML's Schema-Aligned Parsing (SAP) algorithm. GSAP handles messy LLM-generated JSON by gracefully recovering from common issues like missing quotes, trailing commas, single quotes, and type mismatches.
+A robust JSON parser for Go inspired by BAML's Schema-Aligned Parsing (SAP) algorithm. GSAP handles messy LLM-generated JSON by gracefully recovering from common issues like missing quotes, trailing commas, single quotes, and type mismatches -- so you can focus on your application logic instead of writing JSON cleanup code.
 
 ## Features
 
-✅ **Robust JSON Extraction**
-- Extract JSON from markdown code blocks
-- Find JSON embedded in natural language
-- Handle chain-of-thought reasoning before/after JSON
+### JSON Extraction and Fixing
 
-✅ **Intelligent JSON Fixing**
-- Fix unquoted keys and values
-- Convert single/triple quotes to double quotes
-- Remove trailing commas
-- Auto-close unclosed structures
+- Extract JSON from markdown code blocks, natural language, and chain-of-thought output
+- Fix unquoted keys/values, single/triple quotes, trailing commas, unclosed structures
 - Skip comments (`//`, `/* */`)
 
-✅ **Smart Type Coercion**
-- String → Int/Float/Bool with intelligent parsing
-- Fraction parsing (`"1/5"` → 0.2)
-- Currency parsing (`"$1,234.56"` → 1234.56)
-- Comma-separated number parsing
-- Array and struct field coercion
-- Case-insensitive enum matching
+### Smart Type Coercion
 
-✅ **Fuzzy String Matching**
-- Unicode accent removal (`étude` → `etude`)
-- Ligature expansion (`æ` → `ae`)
-- Levenshtein distance-based matching
-- Enum value disambiguation
+- **Strings to numbers**: `"42"` → `42`, `"1/5"` → `0.2`, `"$1,234.56"` → `1234.56`
+- **Numbers with units**: `"30 years"` → `30`, `"$200K"` → `200000`, `"4 GB"` → `4`
+- **Markdown stripping**: `"**42**"` → `42`, `"_true_"` → `true`
+- **Booleans**: `"yes"`, `"no"`, `"on"`, `"off"`, `"y"`, `"n"`, `"enabled"`, `"disabled"`
+- **Null strings**: `"N/A"`, `"none"`, `"null"`, `"unknown"`, `"TBD"` → `nil` for pointer fields
+- **Time parsing**: RFC3339, date-only (`"2024-01-15"`), Unix timestamps
+- **Comma-separated strings to slices**: `"python, go, rust"` → `["python", "go", "rust"]`
+- **Embedded struct** field flattening
 
-✅ **Type-Safe Parsing**
-- Works with standard Go structs
-- Automatic field matching (JSON tags, case-insensitive fallback)
-- Score-based best match selection
+### Fuzzy String Matching
+
+- Unicode accent removal (`étude` → `etude`) and ligature expansion (`æ` → `ae`)
+- Levenshtein distance-based enum value matching and disambiguation
+
+### Type-Safe Parsing
+
+- Generic `Parse[T]` API -- works with any Go struct
+- Automatic field matching via JSON tags with case-insensitive fallback
+- Score-based best match selection across multiple JSON candidates
 
 ## Installation
 
 ```bash
-go get github.com/alcarpenter/gsap
+go get github.com/carpcarp/gsap
 ```
 
 ## Quick Start
@@ -53,7 +50,7 @@ package main
 
 import (
 	"fmt"
-	"github.com/alcarpenter/gsap"
+	"github.com/carpcarp/gsap"
 )
 
 type User struct {
@@ -78,63 +75,95 @@ func main() {
 
 ## Usage Examples
 
-### Basic Parsing
-
-```go
-input := `{"name": "Bob", "age": 25}`
-user, err := gsap.Parse[User](input)
-```
-
-### JSON in Markdown Code Blocks
+### Extracting JSON from LLM Output
 
 ```go
 input := `Here's the user data:
-\`\`\`json
+` + "```json" + `
 {
   "name": "Charlie",
   "age": 35,
   "email": "charlie@example.com"
 }
-\`\`\``
+` + "```"
 
 user, err := gsap.Parse[User](input)
 ```
 
-### Unquoted Keys and Values
+### Fixing Malformed JSON
 
 ```go
-input := `{name: Bob, age: 28, email: bob@example.com}`
+// Unquoted keys, trailing comma, string-typed number
+input := `{name: "David", age: "40", email: david@example.com,}`
 user, err := gsap.Parse[User](input)
+// user.Age == 40 (coerced from string)
 ```
 
-### Type Coercion
+### Numbers with Units and Markdown
+
+LLMs often wrap values in markdown or append units. GSAP handles both:
 
 ```go
-input := `{"name": "David", "age": "40", "email": "david@example.com"}`
-user, err := gsap.Parse[User](input)
-// age is a string in JSON but parsed as int
+type Candidate struct {
+	Name       string  `json:"name"`
+	Experience int     `json:"experience"`
+	Salary     float64 `json:"salary"`
+}
+
+input := `{"name": "**Alice**", "experience": "10 years", "salary": "$200K"}`
+c, err := gsap.Parse[Candidate](input)
+// c.Name == "Alice", c.Experience == 10, c.Salary == 200000
 ```
 
-### With Score (Best Match Quality)
+### Time Parsing
+
+```go
+type Event struct {
+	Name string    `json:"name"`
+	Date time.Time `json:"date"`
+}
+
+input := `{"name": "Launch", "date": "2024-01-15"}`
+event, err := gsap.Parse[Event](input)
+// event.Date is a time.Time for Jan 15, 2024
+```
+
+### Null String Handling
+
+LLMs often use placeholder strings instead of JSON null:
+
+```go
+type Profile struct {
+	Name    string  `json:"name"`
+	Website *string `json:"website"`
+}
+
+input := `{"name": "Bob", "website": "N/A"}`
+p, err := gsap.Parse[Profile](input)
+// p.Website == nil (recognized as null)
+```
+
+### Comma-Separated Strings to Slices
+
+```go
+type Developer struct {
+	Name   string   `json:"name"`
+	Skills []string `json:"skills"`
+}
+
+input := `{"name": "Eve", "skills": "python, go, rust"}`
+dev, err := gsap.Parse[Developer](input)
+// dev.Skills == []string{"python", "go", "rust"}
+```
+
+### Parse Quality Scoring
 
 ```go
 user, score, err := gsap.ParseWithScore[User](input)
 if score != nil {
-	fmt.Printf("Parse score: %d\n", score.Total())
+	fmt.Printf("Parse score: %d (lower is better)\n", score.Total())
+	fmt.Printf("Coercions applied: %v\n", score.Flags())
 }
-```
-
-### Struct with Complex Types
-
-```go
-type Resume struct {
-	Title      string   `json:"title"`
-	Experience []string `json:"experience"`
-	Active     bool     `json:"active"`
-}
-
-input := `{"title": "Engineer", "experience": ["Go", "Rust"], "active": "yes"}`
-resume, err := gsap.Parse[Resume](input)
 ```
 
 ### Manual JSON Fixing
@@ -148,14 +177,14 @@ fixed, err := gsap.FixJSON(messy)
 ## How It Works
 
 ### 1. JSON Extraction
-SAP first extracts potential JSON from the input text:
+GSAP first extracts potential JSON from the input text:
 1. Try standard JSON parsing
 2. Look for markdown code blocks (` ```json ... ``` `)
 3. Find balanced JSON objects/arrays in text
 4. Fall back to fixing malformed JSON
 
 ### 2. JSON Fixing
-When JSON is malformed, SAP's fixing parser:
+When JSON is malformed, GSAP's fixing parser:
 - Tracks open/close brackets and quotes
 - Automatically quotes unquoted keys/values
 - Converts single/triple quotes to double quotes
@@ -163,15 +192,19 @@ When JSON is malformed, SAP's fixing parser:
 - Auto-closes incomplete structures
 
 ### 3. Type Coercion
-After getting valid JSON, SAP coerces values to match the target type:
-- String "42" → int 42
-- String "true" → bool true
-- Float 3.7 → int 4 (rounds)
-- "1/5" → float 0.2
+After getting valid JSON, GSAP coerces values to match the target type:
+- String `"42"` → int `42`, `"$200K"` → float `200000`
+- String `"true"`, `"yes"`, `"enabled"` → bool `true`
+- Float `3.7` → int `4` (rounds)
+- `"1/5"` → float `0.2`
+- `"2024-01-15"` → `time.Time`
+- `"N/A"` → `nil` for pointer fields
+- `"a, b, c"` → `[]string{"a", "b", "c"}`
+- Strips markdown: `"**42**"` → `42`
 - Fuzzy matches enum values
 
 ### 4. Best Match Selection
-When multiple parsings are valid, SAP picks the best using a scoring system:
+When multiple parsings are valid, GSAP picks the best using a scoring system:
 - Exact matches score lowest (best)
 - Type coercions score higher
 - Fuzzy matches score highest (worst)
@@ -194,26 +227,26 @@ parser := gsap.NewParser().WithIncompleteJSON(true)
 
 ## Integration with instructor-go
 
-SAP can be integrated as a custom parser for [instructor-go](https://github.com/567-labs/instructor-go):
+GSAP can be used as a drop-in JSON unmarshaler for [instructor-go](https://github.com/567-labs/instructor-go):
 
 ```go
 import (
-	"github.com/567-labs/instructor-go/pkg/instructor"
-	"github.com/alcarpenter/sap"
+	"reflect"
+	"github.com/carpcarp/gsap"
 )
 
-// Create a custom parser
-type sapParser struct{}
+// GsapUnmarshaler wraps GSAP as a JSON unmarshaler
+type GsapUnmarshaler struct{}
 
-func (p *sapParser) Unmarshal(data []byte, v any) error {
-	result, err := gsap.Parse[T](string(data))
-	// Type assertion and assignment...
-	return err
+func (u *GsapUnmarshaler) Unmarshal(data []byte, v any) error {
+	parser := gsap.NewParser()
+	result, err := parser.Parse(string(data), reflect.TypeOf(v).Elem())
+	if err != nil {
+		return err
+	}
+	reflect.ValueOf(v).Elem().Set(reflect.ValueOf(result))
+	return nil
 }
-
-// Use with instructor-go
-client := instructor.FromOpenAI(openaiClient)
-// Integration details...
 ```
 
 ## Performance
@@ -225,57 +258,62 @@ client := instructor.FromOpenAI(openaiClient)
 
 ## Comparison to BAML
 
-| Feature | SAP | BAML |
-|---------|-----|------|
+| Feature | GSAP | BAML |
+|---------|------|------|
 | JSON fixing | ✅ | ✅ |
 | Type coercion | ✅ | ✅ |
 | Fuzzy matching | ✅ | ✅ |
-| Language | Go | Rust (generates Go) |
-| Schema DSL | ❌ | ✅ |
-| Streaming support | 🔄 | ✅ |
-| Multi-provider | ❌ | ✅ |
-| Type safety | ✅ | ✅ |
-
-## Limitations
-
-- No discriminated unions (use `interface{}` with type switching)
-- No streaming partial types yet (Incomplete/Pending states)
-- No constraint validation (`@check`, `@assert`)
-- No expression evaluation
-- Go's static type system limits dynamic types
+| `time.Time` parsing | ✅ | ❌ |
+| Null string detection | ✅ | ❌ |
+| Markdown stripping | ✅ | ❌ |
+| Language | Go (native) | Rust (generates Go) |
+| Schema DSL | ❌ (uses structs) | ✅ |
+| Streaming support | Partial | ✅ |
+| Type safety | ✅ (generics) | ✅ |
 
 ## Testing
 
 ```bash
-go test -v
+go test -v -race ./...
+go test -bench=. -benchmem ./...
 ```
-
-All tests pass, including:
-- Valid JSON parsing
-- JSON in markdown code blocks
-- Unquoted keys and values
-- String to type coercion
-- Trailing comma handling
-- Boolean coercion
-- Array parsing
-- Fuzzy string matching
 
 ## Roadmap
 
-- [ ] Streaming support with partial types
-- [ ] Constraint validation
+### v0.2 (Current)
+
+- [x] `time.Time` support (RFC3339, date-only, Unix timestamps)
+- [x] Null string handling (`"N/A"`, `"none"`, `"null"` → nil)
+- [x] Comma-separated string → slice conversion
+- [x] Markdown formatting stripping from values
+- [x] Numbers with units (`"30 years"`, `"$200K"`)
+- [x] Embedded struct support
+- [x] Extended boolean variants (`"y"/"n"`, `"enabled"/"disabled"`)
+- [x] Exported score flag constants
+- [x] `Score.Flags()` introspection API
+
+### v0.3
+
+- [ ] `io.Reader` streaming for incremental parsing
+- [ ] `json.Unmarshaler` / `encoding.TextUnmarshaler` detection
+- [ ] Options/Builder pattern for parser configuration
+- [ ] Reflection caching for repeated type parsing
+
+### v0.4+
+
+- [ ] Drop-in adapters for OpenAI, Anthropic, and LangChain Go SDKs
+- [ ] JSON Schema validation and generation
+- [ ] Structured error types with per-field context
 - [ ] Union type support
-- [ ] Schema generation from structs
-- [ ] Field description parsing
-- [ ] Custom coercer registration
-- [ ] Performance benchmarks
+- [ ] Constraint validation
 
 ## Contributing
 
-PRs welcome! Focus areas:
-- Streaming/partial type support
-- Union type handling
-- Constraint validation
+PRs welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+Focus areas:
+- Streaming / `io.Reader` support
+- SDK adapter implementations
 - Performance optimizations
 
 ## License
@@ -284,4 +322,4 @@ MIT
 
 ## Acknowledgments
 
-Inspired by [BAML](https://www.boundaryml.com)'s Schema-Aligned Parsing algorithm. SAP extracts this powerful parsing capability into a lightweight, pure-Go library for use with any Go LLM client.
+Inspired by [BAML](https://www.boundaryml.com)'s Schema-Aligned Parsing algorithm. GSAP extracts this powerful parsing capability into a lightweight, pure-Go library for use with any Go LLM client.
