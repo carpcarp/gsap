@@ -137,7 +137,7 @@ func (c *TypeCoercer) coerceToInt(value interface{}, targetType reflect.Type, sc
 		intVal = int64(v)
 		// Track if we rounded
 		if float64(intVal) != v {
-			score.AddFlag("FloatToInt", 1)
+			score.AddFlag(FlagFloatToInt, 1)
 		}
 
 	case string:
@@ -241,7 +241,7 @@ func (c *TypeCoercer) coerceToBool(value interface{}, score *Score) (interface{}
 		}
 
 	case float64:
-		score.AddFlag("NumberToBool", 1)
+		score.AddFlag(FlagNumberToBool, 1)
 		return v != 0, nil
 
 	default:
