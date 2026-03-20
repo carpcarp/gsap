@@ -3,6 +3,7 @@ package sap
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -49,6 +50,16 @@ func (c *TypeCoercer) coerceValue(value interface{}, targetType reflect.Type, sc
 		return value, nil
 	}
 
+	// Check for null-string variants before type dispatch.
+	// For pointer targets, return nil pointer; for non-pointer targets, return zero value.
+	if s, ok := value.(string); ok && isNullString(s) {
+		score.AddFlag(FlagNullStringCoerced, 1)
+		if targetType.Kind() == reflect.Ptr {
+			return reflect.Zero(targetType).Interface(), nil
+		}
+		return reflect.Zero(targetType).Interface(), nil
+	}
+
 	// Handle pointers
 	if targetType.Kind() == reflect.Ptr {
 		// If value is nil, return nil pointer
@@ -87,6 +98,9 @@ func (c *TypeCoercer) coerceValue(value interface{}, targetType reflect.Type, sc
 	case reflect.Map:
 		return c.coerceToMap(value, targetType, score)
 	case reflect.Struct:
+		if targetType == timeType {
+			return c.coerceToTime(value, score)
+		}
 		return c.coerceToStruct(value, targetType, score)
 	default:
 		return nil, fmt.Errorf("unsupported type: %v", targetType)
@@ -127,19 +141,26 @@ func (c *TypeCoercer) coerceToInt(value interface{}, targetType reflect.Type, sc
 		}
 
 	case string:
+		// Track if markdown was stripped or units were present
+		if _, changed := stripMarkdown(strings.TrimSpace(v)); changed {
+			score.AddFlag(FlagMarkdownStripped, 1)
+		}
+		if reTrailingUnits.MatchString(strings.TrimSpace(v)) {
+			score.AddFlag(FlagUnitStripped, 1)
+		}
 		// Try to parse as number
 		parsed, err := parseNumber(v)
 		if err != nil {
 			return nil, fmt.Errorf("cannot convert string to int: %v", err)
 		}
 		intVal = int64(parsed)
-		score.AddFlag("StringToInt", 2)
+		score.AddFlag(FlagStringToInt, 2)
 
 	case bool:
 		if v {
 			intVal = 1
 		}
-		score.AddFlag("BoolToInt", 2)
+		score.AddFlag(FlagBoolToInt, 2)
 
 	default:
 		return nil, fmt.Errorf("cannot convert %T to int", value)
@@ -171,12 +192,18 @@ func (c *TypeCoercer) coerceToFloat(value interface{}, targetType reflect.Type, 
 		floatVal = v
 
 	case string:
+		if _, changed := stripMarkdown(strings.TrimSpace(v)); changed {
+			score.AddFlag(FlagMarkdownStripped, 1)
+		}
+		if reTrailingUnits.MatchString(strings.TrimSpace(v)) {
+			score.AddFlag(FlagUnitStripped, 1)
+		}
 		parsed, err := parseNumber(v)
 		if err != nil {
 			return nil, fmt.Errorf("cannot convert string to float: %v", err)
 		}
 		floatVal = parsed
-		score.AddFlag("StringToFloat", 2)
+		score.AddFlag(FlagStringToFloat, 2)
 
 	case int, int8, int16, int32, int64:
 		floatVal = float64(reflect.ValueOf(v).Int())
@@ -196,13 +223,18 @@ func (c *TypeCoercer) coerceToBool(value interface{}, score *Score) (interface{}
 		return v, nil
 
 	case string:
-		lower := strings.ToLower(strings.TrimSpace(v))
+		cleaned := strings.TrimSpace(v)
+		if stripped, changed := stripMarkdown(cleaned); changed {
+			cleaned = stripped
+			score.AddFlag(FlagMarkdownStripped, 1)
+		}
+		lower := strings.ToLower(cleaned)
 		switch lower {
-		case "true", "yes", "1", "on":
-			score.AddFlag("StringToBool", 1)
+		case "true", "yes", "1", "on", "y", "enabled", "active":
+			score.AddFlag(FlagStringToBool, 1)
 			return true, nil
-		case "false", "no", "0", "off":
-			score.AddFlag("StringToBool", 1)
+		case "false", "no", "0", "off", "n", "disabled", "inactive":
+			score.AddFlag(FlagStringToBool, 1)
 			return false, nil
 		default:
 			return nil, fmt.Errorf("cannot convert string to bool: %s", v)
@@ -222,15 +254,31 @@ func (c *TypeCoercer) coerceToSlice(value interface{}, targetType reflect.Type, 
 	// Convert to []interface{} first
 	var items []interface{}
 
+	elemType := targetType.Elem()
+
 	switch v := value.(type) {
 	case []interface{}:
 		items = v
+	case string:
+		// If target element type is string, try splitting on commas
+		if elemType.Kind() == reflect.String && strings.Contains(v, ",") {
+			parts := strings.Split(v, ",")
+			for _, p := range parts {
+				trimmed := strings.TrimSpace(p)
+				if trimmed != "" {
+					items = append(items, trimmed)
+				}
+			}
+			score.AddFlag(FlagCommaSplitToSlice, 2)
+		} else {
+			// Single item, wrap in slice
+			items = []interface{}{value}
+		}
 	default:
 		// Single item, wrap in slice
 		items = []interface{}{value}
 	}
 
-	elemType := targetType.Elem()
 	result := reflect.MakeSlice(targetType, len(items), len(items))
 
 	for i, item := range items {
@@ -296,6 +344,31 @@ func (c *TypeCoercer) coerceToMap(value interface{}, targetType reflect.Type, sc
 	return result.Interface(), nil
 }
 
+// structField pairs a reflect.StructField with its index path for Set operations.
+type structField struct {
+	field reflect.StructField
+	index []int // index path for nested embedded fields
+}
+
+// flattenStructFields returns all fields of a struct type, flattening embedded structs.
+func flattenStructFields(t reflect.Type) []structField {
+	var fields []structField
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Anonymous && f.Type.Kind() == reflect.Struct {
+			// Recurse into embedded struct
+			embedded := flattenStructFields(f.Type)
+			for _, ef := range embedded {
+				ef.index = append([]int{i}, ef.index...)
+				fields = append(fields, ef)
+			}
+		} else {
+			fields = append(fields, structField{field: f, index: []int{i}})
+		}
+	}
+	return fields
+}
+
 // coerceToStruct converts value to struct
 func (c *TypeCoercer) coerceToStruct(value interface{}, targetType reflect.Type, score *Score) (interface{}, error) {
 	mapVal, ok := value.(map[string]interface{})
@@ -305,9 +378,12 @@ func (c *TypeCoercer) coerceToStruct(value interface{}, targetType reflect.Type,
 
 	result := reflect.New(targetType).Elem()
 
-	// Get struct fields
-	for i := 0; i < targetType.NumField(); i++ {
-		field := targetType.Field(i)
+	// Flatten fields including embedded structs
+	fields := flattenStructFields(targetType)
+	hasEmbedded := len(fields) != targetType.NumField()
+
+	for _, sf := range fields {
+		field := sf.field
 		fieldType := field.Type
 
 		// Find matching key in map
@@ -339,7 +415,7 @@ func (c *TypeCoercer) coerceToStruct(value interface{}, targetType reflect.Type,
 				if strings.EqualFold(k, field.Name) {
 					mapKey = k
 					mapValue = v
-					score.AddFlag("FuzzyFieldMatch", 1)
+					score.AddFlag(FlagFuzzyFieldMatch, 1)
 					break
 				}
 			}
@@ -352,25 +428,78 @@ func (c *TypeCoercer) coerceToStruct(value interface{}, targetType reflect.Type,
 				// Skip fields that fail to coerce if they're optional
 				continue
 			}
+
+			// Navigate to the field using the index path
+			target := result
+			for _, idx := range sf.index {
+				target = target.Field(idx)
+			}
+
 			// Handle nil values properly - use zero value for the type
 			if elem == nil {
-				result.Field(i).Set(reflect.Zero(fieldType))
+				target.Set(reflect.Zero(fieldType))
 			} else {
-				result.Field(i).Set(reflect.ValueOf(elem))
+				target.Set(reflect.ValueOf(elem))
 			}
 		}
+	}
+
+	if hasEmbedded {
+		score.AddFlag(FlagEmbeddedStruct, 0)
 	}
 
 	return result.Interface(), nil
 }
 
-// parseNumber parses a string as a number
+// stripMarkdown removes markdown bold/italic formatting from a string.
+// e.g. "**42**" → "42", "_30_" → "30", "*text*" → "text"
+func stripMarkdown(s string) (string, bool) {
+	original := s
+	// Strip bold: **text**
+	if strings.HasPrefix(s, "**") && strings.HasSuffix(s, "**") && len(s) > 4 {
+		s = s[2 : len(s)-2]
+	}
+	// Strip bold: __text__
+	if strings.HasPrefix(s, "__") && strings.HasSuffix(s, "__") && len(s) > 4 {
+		s = s[2 : len(s)-2]
+	}
+	// Strip italic: *text* (single, not **)
+	if strings.HasPrefix(s, "*") && strings.HasSuffix(s, "*") && !strings.HasPrefix(s, "**") && len(s) > 2 {
+		s = s[1 : len(s)-1]
+	}
+	// Strip italic: _text_ (single, not __)
+	if strings.HasPrefix(s, "_") && strings.HasSuffix(s, "_") && !strings.HasPrefix(s, "__") && len(s) > 2 {
+		s = s[1 : len(s)-1]
+	}
+	// Strip strikethrough: ~~text~~
+	if strings.HasPrefix(s, "~~") && strings.HasSuffix(s, "~~") && len(s) > 4 {
+		s = s[2 : len(s)-2]
+	}
+	// Strip inline code: `text`
+	if strings.HasPrefix(s, "`") && strings.HasSuffix(s, "`") && len(s) > 2 {
+		s = s[1 : len(s)-1]
+	}
+	return s, s != original
+}
+
+// reTrailingUnits matches a number followed by optional unit words.
+var reTrailingUnits = regexp.MustCompile(`^([+-]?\d[\d,]*\.?\d*)\s*([a-zA-Z/%°]+.*)$`)
+
+// parseNumber parses a string as a number.
+// Handles markdown formatting, currency symbols, commas, K/M/B suffixes, unit words, and fractions.
 func parseNumber(s string) (float64, error) {
+	s = strings.TrimSpace(s)
+
+	// Strip markdown formatting
+	s, _ = stripMarkdown(s)
 	s = strings.TrimSpace(s)
 
 	// Remove currency symbols and commas
 	s = strings.ReplaceAll(s, "$", "")
-	s = strings.ReplaceAll(s, ",", "")
+	s = strings.ReplaceAll(s, "€", "")
+	s = strings.ReplaceAll(s, "£", "")
+
+	s = strings.TrimSpace(s)
 
 	// Handle fractions like "1/5"
 	if strings.Contains(s, "/") {
@@ -384,5 +513,59 @@ func parseNumber(s string) (float64, error) {
 		}
 	}
 
+	// Remove commas from numbers like "1,000,000"
+	s = strings.ReplaceAll(s, ",", "")
+
+	// Handle K/M/B/T suffixes (e.g., "200K" → 200000)
+	if len(s) > 1 {
+		lastChar := strings.ToUpper(s[len(s)-1:])
+		numPart := s[:len(s)-1]
+		switch lastChar {
+		case "K":
+			if v, err := strconv.ParseFloat(numPart, 64); err == nil {
+				return v * 1_000, nil
+			}
+		case "M":
+			if v, err := strconv.ParseFloat(numPart, 64); err == nil {
+				return v * 1_000_000, nil
+			}
+		case "B":
+			if v, err := strconv.ParseFloat(numPart, 64); err == nil {
+				return v * 1_000_000_000, nil
+			}
+		case "T":
+			if v, err := strconv.ParseFloat(numPart, 64); err == nil {
+				return v * 1_000_000_000_000, nil
+			}
+		}
+	}
+
+	// Strip trailing unit words (e.g., "30 years", "4 GB", "100%")
+	if m := reTrailingUnits.FindStringSubmatch(s); m != nil {
+		numStr := strings.ReplaceAll(m[1], ",", "")
+		if v, err := strconv.ParseFloat(numStr, 64); err == nil {
+			return v, nil
+		}
+	}
+
 	return strconv.ParseFloat(s, 64)
+}
+
+// nullStrings are string values that represent null/missing data from LLMs.
+var nullStrings = map[string]bool{
+	"n/a":     true,
+	"na":      true,
+	"none":    true,
+	"null":    true,
+	"nil":     true,
+	"unknown": true,
+	"tbd":     true,
+	"undefined": true,
+	"-":       true,
+	"--":      true,
+}
+
+// isNullString checks if a string is a null-like value.
+func isNullString(s string) bool {
+	return nullStrings[strings.ToLower(strings.TrimSpace(s))]
 }

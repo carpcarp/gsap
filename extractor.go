@@ -7,6 +7,9 @@ import (
 	"strings"
 )
 
+// reMarkdownJSON matches ```json ... ``` or ``` ... ``` code blocks.
+var reMarkdownJSON = regexp.MustCompile("```(?:json|JSON)?\\s*\\n([\\s\\S]*?)```")
+
 // NewExtractor creates a new JSON extractor
 func NewExtractor(opts *ParseOptions) *Extractor {
 	return &Extractor{
@@ -50,9 +53,8 @@ func (e *Extractor) ExtractJSON(input string) ([]JSONCandidate, error) {
 func (e *Extractor) extractMarkdownJSON(input string) []JSONCandidate {
 	var candidates []JSONCandidate
 
-	// Match ```json ... ``` or ``` ... ```
-	re := regexp.MustCompile("```(?:json|JSON)?\\s*\\n([\\s\\S]*?)```")
-	matches := re.FindAllStringSubmatchIndex(input, -1)
+	// Use cached compiled regex
+	matches := reMarkdownJSON.FindAllStringSubmatchIndex(input, -1)
 
 	for _, match := range matches {
 		// match[2] is start of group 1, match[3] is end

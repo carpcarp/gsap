@@ -29,6 +29,14 @@ const (
 	FlagFuzzyFieldMatch     ScoreFlag = "FuzzyFieldMatch"
 	FlagEnumCaseInsensitive ScoreFlag = "EnumCaseInsensitive"
 	FlagEnumFuzzyMatch      ScoreFlag = "EnumFuzzyMatch"
+	FlagStringToTime        ScoreFlag = "StringToTime"
+	FlagUnixToTime          ScoreFlag = "UnixToTime"
+	FlagMarkdownStripped    ScoreFlag = "MarkdownStripped"
+	FlagUnitStripped        ScoreFlag = "UnitStripped"
+	FlagMultiplierApplied   ScoreFlag = "MultiplierApplied"
+	FlagNullStringCoerced   ScoreFlag = "NullStringCoerced"
+	FlagCommaSplitToSlice   ScoreFlag = "CommaSplitToSlice"
+	FlagEmbeddedStruct      ScoreFlag = "EmbeddedStruct"
 )
 
 // Score represents the quality of a parse result
