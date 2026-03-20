@@ -26,7 +26,6 @@ type fixingParserState struct {
 	stringEscaped      bool
 	lastNonWhitespace  rune
 	bracketStack       []rune // Stack of open brackets/braces
-	unquotedValueStart int    // Position where unquoted value started
 }
 
 func (p *fixingParserState) parse() (string, error) {

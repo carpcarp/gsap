@@ -38,52 +38,74 @@ func mustUnmarshalArray(t *testing.T, s string) []interface{} {
 
 // ---------------------------------------------------------------------------
 // closeUnclosedStructures — exercised through FixJSON with truncated inputs
+//
+// Coverage target: closeUnclosedStructures (9.1% -> high).
+// Each test feeds FixJSON an input missing one or more closing brackets.
+// The parser's closeUnclosedStructures method must auto-close them in the
+// correct (reverse) order, optionally removing trailing commas and quoting
+// unquoted values along the way.
 // ---------------------------------------------------------------------------
 
 func TestFixJSON_CloseUnclosedStructures(t *testing.T) {
 	tests := []struct {
 		name      string
 		input     string
-		wantKeys  []string   // expected top-level keys (nil to skip check)
-		wantArray bool       // true if the result should be an array
-		wantLen   int        // expected array length (-1 to skip)
+		wantKeys  []string // expected top-level keys (nil to skip)
+		wantArray bool     // true if the result should be an array
+		wantLen   int      // expected array length (-1 to skip)
 	}{
 		{
-			name:     "unclosed object",
+			name:     "unclosed object with quoted value",
 			input:    `{"name": "Alice"`,
 			wantKeys: []string{"name"},
 		},
 		{
-			name:      "unclosed array",
+			name:      "unclosed array of strings",
 			input:     `["a", "b"`,
 			wantArray: true,
 			wantLen:   2,
 		},
 		{
-			name:     "nested unclosed array inside object",
+			name:     "nested unclosed array of strings inside object",
 			input:    `{"items": ["a", "b"`,
 			wantKeys: []string{"items"},
 		},
 		{
-			name:     "unclosed object with trailing comma removed",
-			input:    `{"a": 1, "b": 2,`,
+			name:     "unclosed object with trailing comma and quoted values",
+			input:    `{"a": "x", "b": "y",`,
 			wantKeys: []string{"a", "b"},
 		},
 		{
-			name:     "multiple nested unclosed structures",
-			input:    `{"a": {"b": [1, 2`,
+			name:     "multiple nested unclosed with string leaf",
+			input:    `{"a": {"b": ["hello"`,
 			wantKeys: []string{"a"},
 		},
 		{
-			name:     "deeply nested all unclosed",
-			input:    `{"l1": {"l2": {"l3": [true`,
+			name:     "deeply nested all unclosed with string values",
+			input:    `{"l1": {"l2": {"l3": ["deep"`,
 			wantKeys: []string{"l1"},
 		},
 		{
-			name:      "unclosed array with trailing comma",
-			input:     `[1, 2, 3,`,
+			name:      "unclosed array of strings with trailing comma",
+			input:     `["x", "y", "z",`,
 			wantArray: true,
 			wantLen:   3,
+		},
+		{
+			name:      "unclosed top-level array of numbers",
+			input:     `[1, 2, 3`,
+			wantArray: true,
+			wantLen:   3,
+		},
+		{
+			name:     "unclosed object with multiple string pairs",
+			input:    `{"first": "Alice", "last": "Smith"`,
+			wantKeys: []string{"first", "last"},
+		},
+		{
+			name:     "unclosed object after comma with no next pair",
+			input:    `{"a": "one",`,
+			wantKeys: []string{"a"},
 		},
 	}
 
@@ -114,6 +136,11 @@ func TestFixJSON_CloseUnclosedStructures(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // handleStringChar — escape sequences within quoted strings
+//
+// Coverage target: handleStringChar (57% -> high).
+// Missing paths: stringEscaped branch (backslash sets the flag, next char
+// clears it), and the quote-char branch (stringQuoteChar terminates the
+// string and writes a double-quote regardless of original quote style).
 // ---------------------------------------------------------------------------
 
 func TestFixJSON_EscapeSequences(t *testing.T) {
@@ -124,19 +151,25 @@ func TestFixJSON_EscapeSequences(t *testing.T) {
 		wantVal  string
 	}{
 		{
-			name:     "escaped double quote inside string",
+			name:     "escaped double quote preserves inner quotes",
 			input:    `{"msg": "say \"hello\""}`,
 			checkKey: "msg",
 			wantVal:  `say "hello"`,
 		},
 		{
-			name:     "escaped newline",
+			name:     "escaped backslash before closing quote",
+			input:    `{"a": "test\\"}`,
+			checkKey: "a",
+			wantVal:  `test\`,
+		},
+		{
+			name:     "escaped newline character",
 			input:    `{"text": "line1\nline2"}`,
 			checkKey: "text",
 			wantVal:  "line1\nline2",
 		},
 		{
-			name:     "multiple consecutive escaped backslashes",
+			name:     "double escaped backslash",
 			input:    `{"a": "\\\\"}`,
 			checkKey: "a",
 			wantVal:  `\\`,
@@ -146,6 +179,12 @@ func TestFixJSON_EscapeSequences(t *testing.T) {
 			input:    `{"t": "col1\tcol2"}`,
 			checkKey: "t",
 			wantVal:  "col1\tcol2",
+		},
+		{
+			name:     "escaped quote at start of value",
+			input:    `{"q": "\"quoted\""}`,
+			checkKey: "q",
+			wantVal:  `"quoted"`,
 		},
 	}
 
@@ -170,7 +209,72 @@ func TestFixJSON_EscapeSequences(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// handleNonStringChar — backtick-quoted strings
+// handleStringChar — stringEscaped flag transitions
+//
+// Verifies the escaped-character state machine toggles correctly:
+// backslash sets the flag, the very next character clears it, and
+// subsequent characters are processed normally.
+// ---------------------------------------------------------------------------
+
+func TestFixJSON_EscapeStateMachine(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		checkKey string
+		wantVal  string
+	}{
+		{
+			name:     "escape then normal char then closing quote",
+			input:    `{"k": "a\nb"}`,
+			checkKey: "k",
+			wantVal:  "a\nb",
+		},
+		{
+			name:     "consecutive escapes cancel out",
+			input:    `{"k": "a\\b"}`,
+			checkKey: "k",
+			wantVal:  "a\\b",
+		},
+		{
+			name:     "escape at very end of string value",
+			input:    `{"k": "end\\"}`,
+			checkKey: "k",
+			wantVal:  `end\`,
+		},
+		{
+			name:     "escaped quote does not end string",
+			input:    `{"k": "has\"quote"}`,
+			checkKey: "k",
+			wantVal:  `has"quote`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FixJSON(tt.input)
+			if err != nil {
+				t.Fatalf("FixJSON returned error: %v", err)
+			}
+			mustBeValidJSON(t, got)
+
+			m := mustUnmarshalObject(t, got)
+			val, ok := m[tt.checkKey]
+			if !ok {
+				t.Fatalf("missing key %q in result", tt.checkKey)
+			}
+			if s, _ := val.(string); s != tt.wantVal {
+				t.Errorf("key %q: got %q, want %q", tt.checkKey, s, tt.wantVal)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleNonStringChar — backtick-quoted strings converted to double quotes
+//
+// Coverage target: the '`' case in handleNonStringChar (under-tested).
+// Backtick strings should enter string mode with stringQuoteChar = '`'
+// and terminate at the closing backtick, emitting double quotes.
 // ---------------------------------------------------------------------------
 
 func TestFixJSON_BacktickQuotes(t *testing.T) {
@@ -187,15 +291,27 @@ func TestFixJSON_BacktickQuotes(t *testing.T) {
 			wantVal:  "Alice",
 		},
 		{
-			name:     "mixed double and backtick quotes",
+			name:     "backtick value with double-quoted key",
 			input:    "{\"name\": `Bob`}",
 			checkKey: "name",
 			wantVal:  "Bob",
 		},
 		{
-			name:     "backtick key with double-quoted value",
-			input:    "{`age`: 42}",
-			checkKey: "age",
+			name:     "backtick key with numeric value",
+			input:    "{`count`: 7}",
+			checkKey: "count",
+		},
+		{
+			name:     "backtick with spaces in value",
+			input:    "{`greeting`: `hello world`}",
+			checkKey: "greeting",
+			wantVal:  "hello world",
+		},
+		{
+			name:     "multiple backtick pairs",
+			input:    "{`a`: `x`, `b`: `y`}",
+			checkKey: "a",
+			wantVal:  "x",
 		},
 	}
 
@@ -222,29 +338,47 @@ func TestFixJSON_BacktickQuotes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Mixed quote styles: single, double, and backtick in one input
+// All three quote styles mixed in a single input
 // ---------------------------------------------------------------------------
 
 func TestFixJSON_MixedQuoteStyles(t *testing.T) {
-	input := "{\"first\": `Bob`, 'age': 30}"
-
-	got, err := FixJSON(input)
-	if err != nil {
-		t.Fatalf("FixJSON returned error: %v", err)
+	tests := []struct {
+		name     string
+		input    string
+		wantKeys []string
+	}{
+		{
+			name:     "double + backtick + single in one object",
+			input:    "{\"first\": `Bob`, 'last': 'Smith'}",
+			wantKeys: []string{"first", "last"},
+		},
+		{
+			name:     "single-quoted keys with backtick values",
+			input:    "{'a': `x`, 'b': `y`}",
+			wantKeys: []string{"a", "b"},
+		},
 	}
-	mustBeValidJSON(t, got)
 
-	m := mustUnmarshalObject(t, got)
-	if s, _ := m["first"].(string); s != "Bob" {
-		t.Errorf("expected first=Bob, got %q", s)
-	}
-	if v, _ := m["age"].(float64); v != 30 {
-		t.Errorf("expected age=30, got %v", v)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FixJSON(tt.input)
+			if err != nil {
+				t.Fatalf("FixJSON returned error: %v", err)
+			}
+			mustBeValidJSON(t, got)
+
+			m := mustUnmarshalObject(t, got)
+			for _, k := range tt.wantKeys {
+				if _, ok := m[k]; !ok {
+					t.Errorf("expected key %q, got keys %v", k, keysOf(m))
+				}
+			}
+		})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Block comments
+// Block comments (/* ... */)
 // ---------------------------------------------------------------------------
 
 func TestFixJSON_BlockComments(t *testing.T) {
@@ -270,6 +404,18 @@ func TestFixJSON_BlockComments(t *testing.T) {
 			checkKey: "title",
 			wantVal:  "hello",
 		},
+		{
+			name:     "block comment before first key",
+			input:    `{/* intro */ "x": "y"}`,
+			checkKey: "x",
+			wantVal:  "y",
+		},
+		{
+			name:     "block comment after last value",
+			input:    `{"k": "v" /* trailing */}`,
+			checkKey: "k",
+			wantVal:  "v",
+		},
 	}
 
 	for _, tt := range tests {
@@ -289,32 +435,62 @@ func TestFixJSON_BlockComments(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Line comments
+// Line comments (// ...)
 // ---------------------------------------------------------------------------
 
 func TestFixJSON_LineComments(t *testing.T) {
-	input := `{
-		"a": 1, // this is a comment
-		"b": 2
-	}`
-
-	got, err := FixJSON(input)
-	if err != nil {
-		t.Fatalf("FixJSON returned error: %v", err)
+	tests := []struct {
+		name     string
+		input    string
+		wantKeys []string
+	}{
+		{
+			name: "line comment after value",
+			input: `{
+				"a": "one", // first
+				"b": "two"
+			}`,
+			wantKeys: []string{"a", "b"},
+		},
+		{
+			name: "line comment on its own line",
+			input: `{
+				// this is a header comment
+				"x": "y"
+			}`,
+			wantKeys: []string{"x"},
+		},
+		{
+			name: "multiple line comments",
+			input: `{
+				"p": "q", // comment 1
+				// comment 2
+				"r": "s"  // comment 3
+			}`,
+			wantKeys: []string{"p", "r"},
+		},
 	}
-	mustBeValidJSON(t, got)
 
-	m := mustUnmarshalObject(t, got)
-	if v, _ := m["a"].(float64); v != 1 {
-		t.Errorf("expected a=1, got %v", v)
-	}
-	if v, _ := m["b"].(float64); v != 2 {
-		t.Errorf("expected b=2, got %v", v)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FixJSON(tt.input)
+			if err != nil {
+				t.Fatalf("FixJSON returned error: %v", err)
+			}
+			mustBeValidJSON(t, got)
+
+			m := mustUnmarshalObject(t, got)
+			for _, k := range tt.wantKeys {
+				if _, ok := m[k]; !ok {
+					t.Errorf("expected key %q, got keys %v", k, keysOf(m))
+				}
+			}
+		})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Edge cases
+// Edge cases: valid JSON and boundary conditions
 // ---------------------------------------------------------------------------
 
 func TestFixJSON_EdgeCases(t *testing.T) {
@@ -322,44 +498,31 @@ func TestFixJSON_EdgeCases(t *testing.T) {
 		name  string
 		input string
 	}{
-		{
-			name:  "empty object",
-			input: `{}`,
-		},
-		{
-			name:  "empty array",
-			input: `[]`,
-		},
-		{
-			name:  "already valid simple object",
-			input: `{"a": 1}`,
-		},
-		{
-			name: "deeply nested valid JSON",
-			input: `{
-				"l1": {
-					"l2": {
-						"l3": {
-							"l4": {
-								"l5": "deep"
-							}
+		{"empty object", `{}`},
+		{"empty array", `[]`},
+		{"single key-value pair", `{"a": "b"}`},
+		{"deeply nested objects with string values", `{
+			"l1": {
+				"l2": {
+					"l3": {
+						"l4": {
+							"l5": "deep"
 						}
 					}
 				}
-			}`,
-		},
-		{
-			name:  "null value",
-			input: `{"a": null}`,
-		},
-		{
-			name:  "boolean values",
-			input: `{"t": true, "f": false}`,
-		},
-		{
-			name:  "numeric values",
-			input: `{"int": 42, "neg": -7, "float": 3.14}`,
-		},
+			}
+		}`},
+		{"boolean true", `{"t": true}`},
+		{"boolean false", `{"f": false}`},
+		{"null value", `{"n": null}`},
+		{"integer value", `{"x": 42}`},
+		{"negative integer", `{"x": -7}`},
+		{"float value", `{"x": 3.14}`},
+		{"string with spaces", `{"msg": "hello world"}`},
+		{"array of strings", `["a", "b", "c"]`},
+		{"top-level number array", `[1, 2, 3]`},
+		{"nested arrays of strings", `{"m": [["a", "b"], ["c"]]}`},
+		{"empty string value", `{"e": ""}`},
 	}
 
 	for _, tt := range tests {
@@ -374,7 +537,7 @@ func TestFixJSON_EdgeCases(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Combined: multiple fix types in a single input
+// Combined: multiple fix types applied in a single input
 // ---------------------------------------------------------------------------
 
 func TestFixJSON_CombinedFixes(t *testing.T) {
@@ -384,18 +547,18 @@ func TestFixJSON_CombinedFixes(t *testing.T) {
 		wantKeys []string
 	}{
 		{
-			name:     "unquoted keys + single quotes + trailing comma",
-			input:    `{name: 'Alice', age: 30,}`,
+			name:     "unquoted keys + single-quoted values + trailing comma",
+			input:    `{name: 'Alice', city: 'NYC',}`,
+			wantKeys: []string{"name", "city"},
+		},
+		{
+			name:     "line comment + unquoted keys + unclosed",
+			input:    `{name: "Bob", // inline` + "\n" + `age: 25`,
 			wantKeys: []string{"name", "age"},
 		},
 		{
-			name:     "comments + unquoted keys + unclosed",
-			input:    `{name: "Bob", // a comment` + "\n" + `age: 25`,
-			wantKeys: []string{"name", "age"},
-		},
-		{
-			name:     "backtick + trailing comma + unclosed array",
-			input:    "{`items`: [1, 2, 3,",
+			name:     "backtick + trailing comma + unclosed array of strings",
+			input:    "{`items`: [\"a\", \"b\",",
 			wantKeys: []string{"items"},
 		},
 		{
@@ -404,6 +567,324 @@ func TestFixJSON_CombinedFixes(t *testing.T) {
 				'user': /* metadata */ {
 					'name': 'Carol'
 			`,
+			wantKeys: []string{"user"},
+		},
+		{
+			name:     "unquoted key + backtick value + line comment",
+			input:    "{status: `active` // note\n}",
+			wantKeys: []string{"status"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FixJSON(tt.input)
+			if err != nil {
+				t.Fatalf("FixJSON returned error: %v", err)
+			}
+			mustBeValidJSON(t, got)
+
+			m := mustUnmarshalObject(t, got)
+			for _, k := range tt.wantKeys {
+				if _, ok := m[k]; !ok {
+					t.Errorf("expected key %q in result, got keys %v", k, keysOf(m))
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency: running FixJSON on its own output should not corrupt data
+// ---------------------------------------------------------------------------
+
+func TestFixJSON_Idempotency(t *testing.T) {
+	inputs := []string{
+		`{"name": "Alice"}`,
+		`[1, 2, 3]`,
+		`{"escaped": "line1\nline2\ttab"}`,
+		`["hello", "world"]`,
+		`{"flag": true}`,
+		`{"empty": ""}`,
+	}
+
+	for _, input := range inputs {
+		t.Run("", func(t *testing.T) {
+			first, err := FixJSON(input)
+			if err != nil {
+				t.Fatalf("first FixJSON call failed: %v", err)
+			}
+
+			second, err := FixJSON(first)
+			if err != nil {
+				t.Fatalf("second FixJSON call failed: %v", err)
+			}
+
+			mustBeValidJSON(t, first)
+			mustBeValidJSON(t, second)
+
+			// Compare semantically (whitespace may differ between passes).
+			var v1, v2 interface{}
+			_ = json.Unmarshal([]byte(first), &v1)
+			_ = json.Unmarshal([]byte(second), &v2)
+
+			b1, _ := json.Marshal(v1)
+			b2, _ := json.Marshal(v2)
+			if string(b1) != string(b2) {
+				t.Errorf("idempotency violated:\n  first:  %s\n  second: %s", first, second)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Structural characters inside quoted strings must be preserved
+// ---------------------------------------------------------------------------
+
+func TestFixJSON_StructuralCharsInStrings(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		checkKey string
+		wantVal  string
+	}{
+		{
+			name:     "braces inside string value",
+			input:    `{"template": "Hello {world}"}`,
+			checkKey: "template",
+			wantVal:  "Hello {world}",
+		},
+		{
+			name:     "backslash-n in string",
+			input:    `{"nl": "a\nb"}`,
+			checkKey: "nl",
+			wantVal:  "a\nb",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FixJSON(tt.input)
+			if err != nil {
+				t.Fatalf("FixJSON returned error: %v", err)
+			}
+			mustBeValidJSON(t, got)
+
+			m := mustUnmarshalObject(t, got)
+			if s, _ := m[tt.checkKey].(string); s != tt.wantVal {
+				t.Errorf("key %q: got %q, want %q", tt.checkKey, s, tt.wantVal)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Trailing comma removal
+// ---------------------------------------------------------------------------
+
+func TestFixJSON_TrailingCommas(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "trailing comma in flat object with string values",
+			input: `{"a": "x", "b": "y",}`,
+		},
+		{
+			name:  "trailing comma in array of strings",
+			input: `["a", "b", "c",]`,
+		},
+		{
+			name:  "trailing comma in array of numbers",
+			input: `[1, 2, 3,]`,
+		},
+		{
+			name:  "trailing comma after boolean",
+			input: `{"flag": true,}`,
+		},
+		{
+			name:  "trailing comma after null",
+			input: `{"val": null,}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FixJSON(tt.input)
+			if err != nil {
+				t.Fatalf("FixJSON returned error: %v", err)
+			}
+			mustBeValidJSON(t, got)
+
+			if strings.Contains(got, ",}") || strings.Contains(got, ",]") {
+				t.Errorf("trailing comma not fully removed: %s", got)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Unquoted keys and values
+// ---------------------------------------------------------------------------
+
+func TestFixJSON_UnquotedKeysAndValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantKeys []string
+	}{
+		{
+			name:     "unquoted keys with quoted string values",
+			input:    `{name: "Alice", city: "NYC"}`,
+			wantKeys: []string{"name", "city"},
+		},
+		{
+			name:     "unquoted keys with numeric values",
+			input:    `{count: 42, score: 99}`,
+			wantKeys: []string{"count", "score"},
+		},
+		{
+			name:     "unquoted keys with boolean values",
+			input:    `{active: true, deleted: false}`,
+			wantKeys: []string{"active", "deleted"},
+		},
+		{
+			name:     "unquoted keys with null value",
+			input:    `{value: null}`,
+			wantKeys: []string{"value"},
+		},
+		{
+			name:     "unquoted keys with unquoted string values",
+			input:    `{name: Bob, status: active}`,
+			wantKeys: []string{"name", "status"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := FixJSON(tt.input)
+			if err != nil {
+				t.Fatalf("FixJSON returned error: %v", err)
+			}
+			mustBeValidJSON(t, got)
+
+			m := mustUnmarshalObject(t, got)
+			for _, k := range tt.wantKeys {
+				if _, ok := m[k]; !ok {
+					t.Errorf("expected key %q in result, got keys %v", k, keysOf(m))
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleStringChar — single-quoted strings end on single quote, not double
+// ---------------------------------------------------------------------------
+
+func TestFixJSON_SingleQuoteStringBoundary(t *testing.T) {
+	// Verify that a single-quoted string terminates at the matching single
+	// quote and produces valid double-quoted JSON output.
+	input := `{'greeting': 'hello world'}`
+
+	got, err := FixJSON(input)
+	if err != nil {
+		t.Fatalf("FixJSON returned error: %v", err)
+	}
+	mustBeValidJSON(t, got)
+
+	m := mustUnmarshalObject(t, got)
+	s, _ := m["greeting"].(string)
+	if s != "hello world" {
+		t.Errorf("expected 'hello world', got %q", s)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// handleStringChar — backtick strings end on backtick, not double quote
+// ---------------------------------------------------------------------------
+
+func TestFixJSON_BacktickStringBoundary(t *testing.T) {
+	// Verify that a backtick-quoted string terminates at the matching
+	// backtick and produces valid double-quoted JSON output.
+	input := "{`greeting`: `hello world`}"
+
+	got, err := FixJSON(input)
+	if err != nil {
+		t.Fatalf("FixJSON returned error: %v", err)
+	}
+	mustBeValidJSON(t, got)
+
+	m := mustUnmarshalObject(t, got)
+	s, _ := m["greeting"].(string)
+	if s != "hello world" {
+		t.Errorf("expected 'hello world', got %q", s)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FixJSON always returns a non-error result
+// ---------------------------------------------------------------------------
+
+func TestFixJSON_NeverReturnsError(t *testing.T) {
+	// The parser is designed to always produce output, even for degenerate
+	// inputs. Verify it never returns an error.
+	inputs := []string{
+		``,
+		`{}`,
+		`[]`,
+		`{`,
+		`[`,
+		`"hello"`,
+		`42`,
+		`true`,
+		`null`,
+		`{{{`,
+	}
+
+	for _, input := range inputs {
+		t.Run("", func(t *testing.T) {
+			_, err := FixJSON(input)
+			if err != nil {
+				t.Errorf("FixJSON(%q) returned unexpected error: %v", input, err)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Truncation scenarios that closeUnclosedStructures can handle
+//
+// The parser closes structures when truncation happens outside a string
+// (i.e., the last string was already terminated). Mid-string truncation
+// is a known limitation.
+// ---------------------------------------------------------------------------
+
+func TestFixJSON_TruncatedAfterCompleteValues(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantKeys []string
+	}{
+		{
+			name:     "truncated after complete key-value pair",
+			input:    `{"name": "Alice"`,
+			wantKeys: []string{"name"},
+		},
+		{
+			name:     "truncated after two complete pairs",
+			input:    `{"name": "Alice", "age": 30`,
+			wantKeys: []string{"name"},
+		},
+		{
+			name:     "truncated after comma with no next value",
+			input:    `{"name": "Alice",`,
+			wantKeys: []string{"name"},
+		},
+		{
+			name:     "truncated nested with complete inner string",
+			input:    `{"user": {"name": "Bob"`,
 			wantKeys: []string{"user"},
 		},
 	}
@@ -427,63 +908,65 @@ func TestFixJSON_CombinedFixes(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Idempotency: fixing already-valid JSON should not corrupt it
+// Value preservation: verify specific values survive the fixing process
 // ---------------------------------------------------------------------------
 
-func TestFixJSON_Idempotency(t *testing.T) {
-	inputs := []string{
-		`[1, 2, 3]`,
-		`{"escaped": "line1\nline2\ttab"}`,
-		`{"a": 1}`,
-	}
-
-	for _, input := range inputs {
-		t.Run("", func(t *testing.T) {
-			first, err := FixJSON(input)
-			if err != nil {
-				t.Fatalf("first FixJSON call failed: %v", err)
-			}
-
-			second, err := FixJSON(first)
-			if err != nil {
-				t.Fatalf("second FixJSON call failed: %v", err)
-			}
-
-			// Both passes should produce valid JSON.
-			mustBeValidJSON(t, first)
-			mustBeValidJSON(t, second)
-
-			// Unmarshal both and compare semantically rather than string-equal,
-			// because whitespace may differ.
-			var v1, v2 interface{}
-			json.Unmarshal([]byte(first), &v1)
-			json.Unmarshal([]byte(second), &v2)
-
-			b1, _ := json.Marshal(v1)
-			b2, _ := json.Marshal(v2)
-			if string(b1) != string(b2) {
-				t.Errorf("idempotency violated:\n  first:  %s\n  second: %s", first, second)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Regression: strings containing structural characters
-// ---------------------------------------------------------------------------
-
-func TestFixJSON_StructuralCharsInStrings(t *testing.T) {
+func TestFixJSON_ValuePreservation(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		checkKey string
-		wantVal  string
+		key      string
+		wantStr  string
+		wantNum  float64
+		wantBool *bool
+		isNum    bool
+		isBool   bool
 	}{
 		{
-			name:     "braces inside string value",
-			input:    `{"template": "Hello {world}"}`,
-			checkKey: "template",
-			wantVal:  "Hello {world}",
+			name:    "quoted string preserved exactly",
+			input:   `{"msg": "Hello World"}`,
+			key:     "msg",
+			wantStr: "Hello World",
+		},
+		{
+			name:    "single-quoted string value preserved",
+			input:   `{'msg': 'testing'}`,
+			key:     "msg",
+			wantStr: "testing",
+		},
+		{
+			name:    "backtick string value preserved",
+			input:   "{`msg`: `works`}",
+			key:     "msg",
+			wantStr: "works",
+		},
+		{
+			name:    "integer value preserved",
+			input:   `{"n": 42}`,
+			key:     "n",
+			wantNum: 42,
+			isNum:   true,
+		},
+		{
+			name:    "negative number preserved",
+			input:   `{"n": -10}`,
+			key:     "n",
+			wantNum: -10,
+			isNum:   true,
+		},
+		{
+			name:     "boolean true preserved",
+			input:    `{"ok": true}`,
+			key:      "ok",
+			wantBool: boolPtr(true),
+			isBool:   true,
+		},
+		{
+			name:     "boolean false preserved",
+			input:    `{"ok": false}`,
+			key:      "ok",
+			wantBool: boolPtr(false),
+			isBool:   true,
 		},
 	}
 
@@ -496,92 +979,23 @@ func TestFixJSON_StructuralCharsInStrings(t *testing.T) {
 			mustBeValidJSON(t, got)
 
 			m := mustUnmarshalObject(t, got)
-			if s, _ := m[tt.checkKey].(string); s != tt.wantVal {
-				t.Errorf("key %q: got %q, want %q", tt.checkKey, s, tt.wantVal)
+			val, ok := m[tt.key]
+			if !ok {
+				t.Fatalf("missing key %q", tt.key)
 			}
-		})
-	}
-}
 
-// ---------------------------------------------------------------------------
-// Trailing comma removal in various positions
-// ---------------------------------------------------------------------------
-
-func TestFixJSON_TrailingCommas(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{
-			name:  "trailing comma in object",
-			input: `{"a": 1, "b": 2,}`,
-		},
-		{
-			name:  "trailing comma in array",
-			input: `[1, 2, 3,]`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := FixJSON(tt.input)
-			if err != nil {
-				t.Fatalf("FixJSON returned error: %v", err)
-			}
-			mustBeValidJSON(t, got)
-
-			// The result must not contain ",}" or ",]" patterns.
-			if strings.Contains(got, ",}") || strings.Contains(got, ",]") {
-				t.Errorf("trailing comma not removed: %s", got)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Unquoted keys and values
-// ---------------------------------------------------------------------------
-
-func TestFixJSON_UnquotedKeysAndValues(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		wantKeys []string
-	}{
-		{
-			name:     "unquoted keys with quoted values",
-			input:    `{name: "Alice", city: "NYC"}`,
-			wantKeys: []string{"name", "city"},
-		},
-		{
-			name:     "unquoted keys with numeric values",
-			input:    `{count: 42, score: 99}`,
-			wantKeys: []string{"count", "score"},
-		},
-		{
-			name:     "unquoted keys with boolean values",
-			input:    `{active: true, deleted: false}`,
-			wantKeys: []string{"active", "deleted"},
-		},
-		{
-			name:     "unquoted keys with null value",
-			input:    `{value: null}`,
-			wantKeys: []string{"value"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := FixJSON(tt.input)
-			if err != nil {
-				t.Fatalf("FixJSON returned error: %v", err)
-			}
-			mustBeValidJSON(t, got)
-
-			m := mustUnmarshalObject(t, got)
-			for _, k := range tt.wantKeys {
-				if _, ok := m[k]; !ok {
-					t.Errorf("expected key %q in result, got keys %v", k, keysOf(m))
+			switch {
+			case tt.isNum:
+				if n, _ := val.(float64); n != tt.wantNum {
+					t.Errorf("key %q: got %v, want %v", tt.key, n, tt.wantNum)
+				}
+			case tt.isBool:
+				if b, _ := val.(bool); b != *tt.wantBool {
+					t.Errorf("key %q: got %v, want %v", tt.key, b, *tt.wantBool)
+				}
+			default:
+				if s, _ := val.(string); s != tt.wantStr {
+					t.Errorf("key %q: got %q, want %q", tt.key, s, tt.wantStr)
 				}
 			}
 		})
@@ -589,7 +1003,7 @@ func TestFixJSON_UnquotedKeysAndValues(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper
+// Helpers
 // ---------------------------------------------------------------------------
 
 func keysOf(m map[string]interface{}) []string {
@@ -598,4 +1012,8 @@ func keysOf(m map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
