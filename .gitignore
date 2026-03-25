@@ -30,3 +30,6 @@ vendor/
 # Build artifacts
 dist/
 build/
+
+# Tool artifacts
+.playwright-mcp/
