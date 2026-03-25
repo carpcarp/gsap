@@ -3,7 +3,21 @@ package sap
 import (
 	"fmt"
 	"reflect"
+	"time"
 )
+
+type TestCandidate struct {
+	Name       string    `json:"name"`
+	Age        int       `json:"age"`
+	Email      string    `json:"email"`
+	Skills     []string  `json:"skills"`
+	Experience int       `json:"experience"`
+	Salary     float64   `json:"salary"`
+	Remote     bool      `json:"remote"`
+	StartDate  time.Time `json:"start_date"`
+	Website    *string   `json:"website"`
+	Notes      *string   `json:"notes"`
+}
 
 func ExampleParse() {
 	input := `{"name": "Alice", "age": 30, "email": "alice@example.com"}`
@@ -242,4 +256,58 @@ func ExampleNewInstructorParser() {
 	// Output:
 	// Alice
 	// 30
+}
+
+func ExampleParse_realWorldLLMOutput() {
+	// This is what LLM output actually looks like — chain-of-thought preamble,
+	// markdown code block, broken JSON with comments, mixed quotes, and values
+	// that need coercion. GSAP handles all of it in a single call.
+	input := "Sure! Here's the candidate information I extracted:\n\n" +
+		"```json\n" +
+		"{\n" +
+		"    // Personal details\n" +
+		"    name: 'Jane Doe',\n" +
+		"    'age': \"29 years\",\n" +
+		"    email: 'jane.doe@example.com',\n" +
+		"\n" +
+		"    /* Professional info */\n" +
+		"    skills: \"go, python, react, typescript\",\n" +
+		"    experience: \"8 years\",\n" +
+		"    salary: \"$185K\",\n" +
+		"    remote: \"yes\",\n" +
+		"    start_date: \"2025-03-15\",\n" +
+		"\n" +
+		"    // Optional fields\n" +
+		"    website: \"N/A\",\n" +
+		"    notes: \"TBD\",\n" +
+		"}\n" +
+		"```\n\n" +
+		"Let me know if you need anything else!"
+
+	candidate, err := Parse[TestCandidate](input)
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println(candidate.Name)
+	fmt.Println(candidate.Age)
+	fmt.Println(candidate.Email)
+	fmt.Println(candidate.Skills)
+	fmt.Println(candidate.Experience)
+	fmt.Println(candidate.Salary)
+	fmt.Println(candidate.Remote)
+	fmt.Println(candidate.StartDate.Format("2006-01-02"))
+	fmt.Println(candidate.Website)
+	fmt.Println(candidate.Notes)
+	// Output:
+	// Jane Doe
+	// 29
+	// jane.doe@example.com
+	// [go python react typescript]
+	// 8
+	// 185000
+	// true
+	// 2025-03-15
+	// <nil>
+	// <nil>
 }

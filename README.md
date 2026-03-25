@@ -73,6 +73,74 @@ func main() {
 }
 ```
 
+## Real-World LLM Output
+
+Here's what LLM output actually looks like — and what GSAP does with it:
+
+```go
+type JobCandidate struct {
+    Name       string    `json:"name"`
+    Age        int       `json:"age"`
+    Email      string    `json:"email"`
+    Skills     []string  `json:"skills"`
+    Experience int       `json:"experience"`
+    Salary     float64   `json:"salary"`
+    Remote     bool      `json:"remote"`
+    StartDate  time.Time `json:"start_date"`
+    Website    *string   `json:"website"`
+    Notes      *string   `json:"notes"`
+}
+```
+
+Feed this absolute mess to `gsap.Parse`:
+
+````
+Sure! Here's the candidate information I extracted:
+
+```json
+{
+    // Personal details
+    name: 'Jane Doe',
+    'age': "29 years",
+    email: 'jane.doe@example.com',
+
+    /* Professional info */
+    skills: "go, python, react, typescript",
+    experience: "8 years",
+    salary: "$185K",
+    remote: "yes",
+    start_date: "2025-03-15",
+
+    // Optional fields
+    website: "N/A",
+    notes: "TBD",
+}
+```
+
+Let me know if you need anything else!
+````
+
+```go
+candidate, err := gsap.Parse[JobCandidate](input)
+```
+
+**One call. Clean struct:**
+
+| Field | Raw Garbage | Parsed Result | What GSAP Did |
+|---|---|---|---|
+| `Name` | `name: 'Jane Doe'` | `"Jane Doe"` | Unquoted key, single-quote value |
+| `Age` | `"29 years"` | `29` | Stripped units, string to int |
+| `Email` | `email: 'jane.doe@example.com'` | `"jane.doe@example.com"` | Unquoted key, single quotes |
+| `Skills` | `"go, python, react, typescript"` | `["go", "python", "react", "typescript"]` | Comma-separated string to slice |
+| `Experience` | `"8 years"` | `8` | Stripped units, string to int |
+| `Salary` | `"$185K"` | `185000` | Currency symbol, K suffix |
+| `Remote` | `"yes"` | `true` | Boolean coercion |
+| `StartDate` | `"2025-03-15"` | `time.Time{2025-03-15}` | Date string to time.Time |
+| `Website` | `"N/A"` | `nil` | Null string detection |
+| `Notes` | `"TBD"` | `nil` | Null string detection |
+
+Plus: extracted JSON from markdown code block, skipped `//` and `/* */` comments, removed trailing commas, and auto-fixed the entire malformed structure.
+
 ## Usage Examples
 
 ### Extracting JSON from LLM Output
